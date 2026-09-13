@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: Validate and compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ESPHome
+        run: pip install esphome
+
+      - name: Provide CI secrets
+        run: |
+          cat > secrets.yaml <<'EOF'
+          wifi_ssid: "ci"
+          wifi_password: "ci-password"
+          EOF
+
+      # Built as shipped, resolving esphome-dspi from github:// exactly as
+      # someone cloning this repo would. That also covers the source URL
+      # itself, which a local-checkout build would silently bypass.
+      - name: Validate
+        run: esphome config dspin.yaml
+
+      - name: Compile
+        run: esphome compile dspin.yaml

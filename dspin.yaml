@@ -1,0 +1,208 @@
+# DSPin: a Sendspin player built from an ESP32-S3-BOX-3 and a DSPi.
+#
+# The ESP32 receives synchronized network audio over Sendspin and feeds it to
+# the DSPi as I2S, while separately controlling the DSPi over UART so the DSP
+# appears in Home Assistant.
+#
+# Why a board with PSRAM: Sendspin's stream buffer defaults to 1 MB. On an
+# ESP32-S3 without PSRAM the sendspin components fail to initialise outright,
+# and shrinking the buffer far enough to fit only moves the failure to the I2S
+# speaker task, which can then no longer find a large enough contiguous block.
+# See examples/phase0-box3-nopsram.yaml for the measurements.
+#
+# BEFORE FLASHING: the DSPi needs a one-time setup over USB to enable its UART
+# control interface and put its I2S input into clock-slave mode. See the README
+# section "One-time DSPi setup" -- the ESP32 cannot do this for itself, by
+# design (the DSPi refuses interface configuration over the interface being
+# configured, so a controller can never lock itself out).
+
+substitutions:
+  name: dspin
+  friendly_name: DSPin
+
+  # Every board-specific detail lives here. Porting to another ESP32 board
+  # should mean editing this block and nothing else.
+  #
+  # The Box-3 routes 16 GPIOs to its PCIe edge connector:
+  #   9, 10, 11, 12, 13, 14, 19, 20, 21, 38, 39, 40, 41, 42, 43, 44
+  # The DOCK and the BREAD adapter are just different breakouts of that one
+  # connector, so these five pins are the same either way; only where they sit
+  # physically differs. On the DOCK they are all on PMOD1 (positions in the
+  # comments below); on the BREAD they appear on the 36-pin header.
+  #
+  # Three of that 16 are deliberately not used: GPIO19 and GPIO20 are the USB
+  # D+/D- lines used for flashing and logging, and GPIO42 is also SD_D2. Take
+  # care on the BREAD, which has no functional labels to warn you off them.
+  # None of the five below are strapping pins.
+  i2s_bclk: GPIO39 # DOCK PMOD1 IO3 -> DSPi GPIO 2  (slave BCK)
+  i2s_lrclk: GPIO40 # DOCK PMOD1 IO4 -> DSPi GPIO 3  (slave LRCLK)
+  i2s_dout: GPIO41 # DOCK PMOD1 IO8 -> DSPi GPIO 1  (I2S RX data)
+  dspi_uart_tx: GPIO38 # DOCK PMOD1 IO7 -> DSPi GPIO 17 (its UART RX)
+  dspi_uart_rx: GPIO21 # DOCK PMOD1 IO5 <- DSPi GPIO 16 (its UART TX)
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32s3box
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+external_components:
+  - source: github://markbergsma/esphome-dspi@main
+    components: [dspi]
+
+logger:
+  level: INFO
+
+api:
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+# --- Control link to the DSPi ----------------------------------------------
+
+uart:
+  - id: dspi_uart
+    tx_pin: ${dspi_uart_tx}
+    rx_pin: ${dspi_uart_rx}
+    # Must match the baud set in UartCtrlConfig over USB. The protocol allows
+    # 9600..1000000; a high rate keeps each exchange short.
+    baud_rate: 460800
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    # The ESP-IDF driver drops silently on overflow, and a burst of
+    # notifications during a preset load can outrun the 256-byte default.
+    rx_buffer_size: 512
+
+dspi:
+  id: dspi_hub
+  uart_id: dspi_uart
+  # We are the thing feeding the DSPi's I2S input, so claim that input once at
+  # boot if it is set to something else. Deliberately once only: switching
+  # sources resets the DSPi audio pipeline.
+  boot_input_source: i2s
+  # Notifications are enabled on the device, so no polling is needed.
+  poll_interval: 0s
+
+number:
+  # What a listener turns, and what Music Assistant's volume should map onto.
+  # Same field as the USB host's volume slider, and the one that drives the
+  # DSPi's loudness compensation -- so the equal-loudness contour tracks it.
+  - platform: dspi
+    dspi_id: dspi_hub
+    type: user_volume
+    name: Volume
+    id: dspi_volume
+
+  # The output ceiling: how loud this system may ever get. A configuration
+  # setting rather than a listening control, so it is categorised as config and
+  # stays out of the way. Worth setting once to match your amplifier.
+  - platform: dspi
+    dspi_id: dspi_hub
+    type: master_volume
+    name: Master Volume
+    id: dspi_master_volume
+
+switch:
+  - platform: dspi
+    dspi_id: dspi_hub
+    name: Mute
+    id: dspi_mute
+
+select:
+  - platform: dspi
+    dspi_id: dspi_hub
+    name: Input Source
+    id: dspi_input_source
+    entity_category: config
+
+# --- Audio path to the DSPi ------------------------------------------------
+#
+# The ESP32 is the I2S clock master and the DSPi is the clock slave, which is
+# what lets the DSPi auto-detect the rate and servo its own outputs to our
+# clock. 32-bit slots are required: the DSPi's slave mode expects
+# BCK = 64 x Fs and does not detect the frame format at runtime.
+#
+# No MCLK pin is wired. The DSPi forces its own MCK output off while clock-
+# slaved and does not want one from us, so that is a pin saved rather than a
+# feature missing.
+
+i2s_audio:
+  - id: i2s_bus
+    i2s_lrclk_pin: ${i2s_lrclk}
+    i2s_bclk_pin: ${i2s_bclk}
+
+speaker:
+  - platform: i2s_audio
+    id: dspi_speaker
+    i2s_audio_id: i2s_bus
+    i2s_dout_pin: ${i2s_dout}
+    dac_type: external
+    i2s_mode: primary
+    bits_per_sample: 32bit
+    channel: stereo
+    sample_rate: 48000
+    # Accurate clock generation matters here: the DSPi locks to this clock and
+    # rate-matches its own outputs to it.
+    use_apll: true
+    # Measured behaviour, so you know what to expect rather than guessing:
+    # track changes cost nothing (Sendspin keeps the stream running across
+    # them, and the DSPi holds lock with no losses and no slips), but an
+    # explicit pause does stop BCLK/LRCLK within about 2 s. The DSPi then
+    # drops to ACQUIRING and mutes its outputs until the clock returns,
+    # re-locking cleanly in under 2 s on resume. So expect a beat of silence
+    # after unpausing, and nothing at all between tracks.
+    #
+    # `timeout: never` does NOT prevent that: it governs bus teardown, not
+    # clock output, and the clock stops regardless. It is kept because
+    # avoiding the teardown churn is still worth having, not because it keeps
+    # the DSPi locked.
+    timeout: never
+
+media_player:
+  # speaker_source, not speaker: this is the platform that can be handed a
+  # media_source to play from. A plain `speaker` media_player has no way to
+  # reference the Sendspin source, so the device would receive the stream and
+  # then have nowhere to put it.
+  - platform: speaker_source
+    id: dspi_media
+    name: Player
+    media_pipeline:
+      speaker: dspi_speaker
+      sources:
+        - sendspin_source
+
+sendspin:
+  id: sendspin_hub
+
+media_source:
+  - platform: sendspin
+    id: sendspin_source
+    sendspin_id: sendspin_hub
+    # Sendspin resamples to this rate rather than following the source, so the
+    # DSPi sees a constant 48 kHz. Its clock-slave input locks to 44.1, 48 or
+    # 96 kHz only, so do not set anything else here.
+    sample_rate: 48000
+
+# Track metadata, which is also the quickest confirmation that audio is really
+# flowing rather than merely that the device booted.
+text_sensor:
+  - platform: sendspin
+    sendspin_id: sendspin_hub
+    type: title
+    name: Track Title
+  - platform: sendspin
+    sendspin_id: sendspin_hub
+    type: artist
+    name: Track Artist
