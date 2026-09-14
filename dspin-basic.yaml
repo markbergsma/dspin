@@ -91,15 +91,17 @@ uart:
     # notifications during a preset load can outrun the 256-byte default.
     rx_buffer_size: 512
 
+# Written as a list item rather than a bare mapping so dspin.yaml can reach it
+# with `id: !extend dspi_hub` to add the display-only spectrum analyser config.
 dspi:
-  id: dspi_hub
-  uart_id: dspi_uart
-  # We are the thing feeding the DSPi's I2S input, so claim that input once at
-  # boot if it is set to something else. Deliberately once only: switching
-  # sources resets the DSPi audio pipeline.
-  boot_input_source: i2s
-  # Notifications are enabled on the device, so no polling is needed.
-  poll_interval: 0s
+  - id: dspi_hub
+    uart_id: dspi_uart
+    # We are the thing feeding the DSPi's I2S input, so claim that input once at
+    # boot if it is set to something else. Deliberately once only: switching
+    # sources resets the DSPi audio pipeline.
+    boot_input_source: i2s
+    # Notifications are enabled on the device, so no polling is needed.
+    poll_interval: 0s
 
 number:
   # What a listener turns, and what Music Assistant's volume should map onto.

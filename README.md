@@ -20,6 +20,8 @@ The name is not quite a coincidence: `sendspin` contains `dspi`
 ## Supported functionality
 - Basic control in Home Assistant: user volume & master volume (in dB), mute, source selection, media_player entity, and track meta data.
 - Streaming audio over Sendspin (from e.g. Music Assistant)
+- A multi-page, LVGL based UI with album art, artist/track info and basic playback controls
+- On-screen spectrum analyser, driven by the DSPi's own FFT engine
 
 ## Supported hardware
 
@@ -98,7 +100,7 @@ There are two configs, for the same hardware:
 
 | Config | What you get |
 |---|---|
-| `dspin.yaml` | The full build: album artwork, track metadata, and touch controls for volume, mute and transport on the Box-3's panel. Flash this unless you have a reason not to. |
+| `dspin.yaml` | The full build: album artwork, track metadata, a spectrum analyser, and touch controls for volume, mute and transport on the Box-3's panel. Flash this unless you have a reason not to. |
 | `dspin-basic.yaml` | Streaming and Home Assistant control only, with nothing on the panel. Useful on a board with no display, or if you would rather not spend the flash and RAM on a UI. |
 
 `dspin.yaml` includes `dspin-basic.yaml` as a package and adds the display to
