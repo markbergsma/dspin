@@ -7,8 +7,14 @@ on:
 
 jobs:
   build:
-    name: Validate and compile
+    name: Validate and compile ${{ matrix.config }}
     runs-on: ubuntu-latest
+    # Both configs are built: dspin-basic.yaml is what dspin.yaml includes, but
+    # it is also flashable on its own, so it has to keep building on its own.
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [dspin.yaml, dspin-basic.yaml]
     steps:
       - uses: actions/checkout@v4
 
@@ -30,7 +36,7 @@ jobs:
       # someone cloning this repo would. That also covers the source URL
       # itself, which a local-checkout build would silently bypass.
       - name: Validate
-        run: esphome config dspin.yaml
+        run: esphome config ${{ matrix.config }}
 
       - name: Compile
-        run: esphome compile dspin.yaml
+        run: esphome compile ${{ matrix.config }}

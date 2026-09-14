@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Build DSPin against a local checkout of esphome-dspi.
 #
-# dspin.yaml refers to the component by its published github:// URL, which is
+# The configs refer to the component by its published github:// URL, which is
 # what someone cloning this repo should get. While the component is unpublished,
 # or while you are developing it alongside this config, that URL has to be
 # rewritten to a local path. This wrapper does that against a scratch copy so
-# dspin.yaml itself stays as users see it.
+# the configs themselves stay as users see it.
 #
 #   ./tools/build.sh config                    # validate
 #   ./tools/build.sh compile                   # build
 #   ./tools/build.sh run --device dspin.local  # build, upload, tail logs
+#
+# Builds dspin.yaml (the full UI build) by default. Set DSPIN_CONFIG to build
+# the headless one instead:
+#   DSPIN_CONFIG=dspin-basic.yaml ./tools/build.sh compile
 #
 # Override the component location with DSPI_COMPONENTS if it is not a sibling:
 #   DSPI_COMPONENTS=~/src/esphome-dspi/components ./tools/build.sh compile
@@ -32,14 +36,25 @@ if [ $# -eq 0 ]; then
   exit 2
 fi
 
-# esphome resolves !secret relative to the config file, so the scratch copy
-# needs the secrets alongside it.
+CONFIG="${DSPIN_CONFIG:-dspin.yaml}"
+
+if [ ! -f "$CONFIG" ]; then
+  echo "error: no config at $CONFIG" >&2
+  exit 1
+fi
+
+# esphome resolves !secret and !include relative to the config file, so the
+# scratch copy needs the secrets and every config alongside it -- dspin.yaml
+# includes dspin-basic.yaml as a package, and that is also the file carrying
+# the external_components URL the sed below rewrites.
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 
-sed "s|source: github://markbergsma/esphome-dspi@main|source: {type: local, path: $COMPONENTS}|" \
-  dspin.yaml >"$scratch/dspin.yaml"
+for f in dspin*.yaml; do
+  sed "s|source: github://markbergsma/esphome-dspi@main|source: {type: local, path: $COMPONENTS}|" \
+    "$f" >"$scratch/$f"
+done
 [ -f secrets.yaml ] && cp secrets.yaml "$scratch/secrets.yaml"
 
-echo "building against $COMPONENTS"
-exec esphome "$1" "$scratch/dspin.yaml" "${@:2}"
+echo "building $CONFIG against $COMPONENTS"
+exec esphome "$1" "$scratch/$CONFIG" "${@:2}"

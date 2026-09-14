@@ -2,7 +2,7 @@
 
 This document defines architectural standards, hardware constraints, and coding guidelines for AI coding assistants working in the `dspin` repository.
 
-DSPin is a Sendspin network audio player built from an ESP32-S3 board and a [DSPi](https://github.com/WeebLabs/DSPi). This repo holds **one ESPHome config and its documentation** — there is no C++ here. Control is handled by the [`esphome-dspi`](https://github.com/markbergsma/esphome-dspi) component, pulled in via `external_components`.
+DSPin is a Sendspin network audio player built from an ESP32-S3 board and a [DSPi](https://github.com/WeebLabs/DSPi). This repo holds **two ESPHome configs and their documentation** — there is no C++ here. `dspin-basic.yaml` is the player without a UI and is flashable on its own; `dspin.yaml` includes it as a package and adds the display, so shared config is never duplicated. Anything common belongs in `dspin-basic.yaml`; put display-only config in `dspin.yaml`, reaching base entities with `id: !extend` rather than redeclaring them. Control is handled by the [`esphome-dspi`](https://github.com/markbergsma/esphome-dspi) component, pulled in via `external_components`.
 
 The **ESP32-S3-BOX-3** is the only board supported today, with others intended. Keep every board-specific value — pins above all — in the `substitutions:` block, so adding a board is an edit to that block rather than a hunt through the config.
 
@@ -52,7 +52,8 @@ These were measured on hardware. Re-deriving them costs a flash cycle each.
   ./tools/build.sh compile                   # build
   ./tools/build.sh run --device dspin.local  # build, upload, tail logs
   ```
-  `dspin.yaml` itself keeps the published URL, because that is what someone cloning this repo should get. **Do not edit it to a local path**, even temporarily — use the wrapper, or `DSPI_COMPONENTS` if the checkout is not a sibling directory.
+  The configs themselves keep the published URL, because that is what someone cloning this repo should get. **Do not edit them to a local path**, even temporarily — use the wrapper, or `DSPI_COMPONENTS` if the checkout is not a sibling directory.
+- **Both configs must keep building.** The wrapper builds `dspin.yaml` by default; `DSPIN_CONFIG=dspin-basic.yaml ./tools/build.sh compile` builds the headless one, and CI builds both.
 - The component tracks `@main` and has no version tags, so its interface can change without notice. If a build breaks after a component change, fix this repo to match rather than pinning around it.
 - **Verify audio changes on hardware.** A successful compile proves nothing about clocking. With a DSPi attached over USB:
   ```bash

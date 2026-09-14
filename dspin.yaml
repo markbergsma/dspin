@@ -1,208 +1,581 @@
-# DSPin: a Sendspin player built from an ESP32-S3-BOX-3 and a DSPi.
+# DSPin with the on-screen UI: the full build, and the one to flash unless you
+# have a reason not to.
 #
-# The ESP32 receives synchronized network audio over Sendspin and feeds it to
-# the DSPi as I2S, while separately controlling the DSPi over UART so the DSP
-# appears in Home Assistant.
+# Everything that makes the player a player -- the board, the DSPi control
+# link, the I2S clocking, Sendspin itself -- lives in dspin-basic.yaml, which
+# this file includes as a package and then adds a display to. That split is not
+# cosmetic: dspin-basic.yaml is flashable on its own for a headless streamer,
+# and because it is included rather than copied there is only one copy of the
+# audio path to keep correct.
 #
-# Why a board with PSRAM: Sendspin's stream buffer defaults to 1 MB. On an
-# ESP32-S3 without PSRAM the sendspin components fail to initialise outright,
-# and shrinking the buffer far enough to fit only moves the failure to the I2S
-# speaker task, which can then no longer find a large enough contiguous block.
-# See examples/phase0-box3-nopsram.yaml for the measurements.
+# So read dspin-basic.yaml for the player and this file for the panel. The
+# BEFORE FLASHING note about the DSPi's one-time USB setup is over there too,
+# and it applies just the same here.
 #
-# BEFORE FLASHING: the DSPi needs a one-time setup over USB to enable its UART
-# control interface and put its I2S input into clock-slave mode. See the README
-# section "One-time DSPi setup" -- the ESP32 cannot do this for itself, by
-# design (the DSPi refuses interface configuration over the interface being
-# configured, so a controller can never lock itself out).
+# What this adds: album artwork filling the screen, artist and title, a track
+# details page, and touch controls for volume, mute and transport.
 
-substitutions:
-  name: dspin
-  friendly_name: DSPin
+packages:
+  base: !include dspin-basic.yaml
 
-  # Every board-specific detail lives here. Porting to another ESP32 board
-  # should mean editing this block and nothing else.
-  #
-  # The Box-3 routes 16 GPIOs to its PCIe edge connector:
-  #   9, 10, 11, 12, 13, 14, 19, 20, 21, 38, 39, 40, 41, 42, 43, 44
-  # The DOCK and the BREAD adapter are just different breakouts of that one
-  # connector, so these five pins are the same either way; only where they sit
-  # physically differs. On the DOCK they are all on PMOD1 (positions in the
-  # comments below); on the BREAD they appear on the 36-pin header.
-  #
-  # Three of that 16 are deliberately not used: GPIO19 and GPIO20 are the USB
-  # D+/D- lines used for flashing and logging, and GPIO42 is also SD_D2. Take
-  # care on the BREAD, which has no functional labels to warn you off them.
-  # None of the five below are strapping pins.
-  i2s_bclk: GPIO39 # DOCK PMOD1 IO3 -> DSPi GPIO 2  (slave BCK)
-  i2s_lrclk: GPIO40 # DOCK PMOD1 IO4 -> DSPi GPIO 3  (slave LRCLK)
-  i2s_dout: GPIO41 # DOCK PMOD1 IO8 -> DSPi GPIO 1  (I2S RX data)
-  dspi_uart_tx: GPIO38 # DOCK PMOD1 IO7 -> DSPi GPIO 17 (its UART RX)
-  dspi_uart_rx: GPIO21 # DOCK PMOD1 IO5 <- DSPi GPIO 16 (its UART TX)
+# Entities defined in the base, extended here to drive the display. `!extend`
+# reaches an existing list item by id and merges into it; without it these
+# blocks would be appended as second, conflicting definitions, because package
+# merging concatenates lists rather than matching them up.
+text_sensor:
+  - id: !extend track_title
+    on_value:
+      - lvgl.label.update:
+          id: title_label
+          text: !lambda "return x;"
+  - id: !extend track_artist
+    on_value:
+      - lvgl.label.update:
+          id: artist_label
+          text: !lambda "return x;"
 
-esphome:
-  name: ${name}
-  friendly_name: ${friendly_name}
-
-esp32:
-  board: esp32s3box
-  flash_size: 16MB
-  framework:
-    type: esp-idf
-
-psram:
-  mode: octal
-  speed: 80MHz
-
-external_components:
-  - source: github://markbergsma/esphome-dspi@main
-    components: [dspi]
-
-logger:
-  level: INFO
-
-api:
-ota:
-  - platform: esphome
-
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-
-# --- Control link to the DSPi ----------------------------------------------
-
-uart:
-  - id: dspi_uart
-    tx_pin: ${dspi_uart_tx}
-    rx_pin: ${dspi_uart_rx}
-    # Must match the baud set in UartCtrlConfig over USB. The protocol allows
-    # 9600..1000000; a high rate keeps each exchange short.
-    baud_rate: 460800
-    data_bits: 8
-    parity: NONE
-    stop_bits: 1
-    # The ESP-IDF driver drops silently on overflow, and a burst of
-    # notifications during a preset load can outrun the 256-byte default.
-    rx_buffer_size: 512
-
-dspi:
-  id: dspi_hub
-  uart_id: dspi_uart
-  # We are the thing feeding the DSPi's I2S input, so claim that input once at
-  # boot if it is set to something else. Deliberately once only: switching
-  # sources resets the DSPi audio pipeline.
-  boot_input_source: i2s
-  # Notifications are enabled on the device, so no polling is needed.
-  poll_interval: 0s
+  # Album and album artist are only shown on the details page, so unlike title
+  # and artist they are not in the base config at all.
+  - platform: sendspin
+    sendspin_id: sendspin_hub
+    type: album
+    name: Album
+    id: track_album
+    on_value:
+      - lvgl.label.update:
+          id: album_label
+          text: !lambda "return x;"
+  - platform: sendspin
+    sendspin_id: sendspin_hub
+    type: album_artist
+    name: Album Artist
+    id: track_album_artist
+    on_value:
+      - lvgl.label.update:
+          id: album_artist_label
+          text: !lambda "return x;"
 
 number:
-  # What a listener turns, and what Music Assistant's volume should map onto.
-  # Same field as the USB host's volume slider, and the one that drives the
-  # DSPi's loudness compensation -- so the equal-loudness contour tracks it.
-  - platform: dspi
-    dspi_id: dspi_hub
-    type: user_volume
-    name: Volume
-    id: dspi_volume
-
-  # The output ceiling: how loud this system may ever get. A configuration
-  # setting rather than a listening control, so it is categorised as config and
-  # stays out of the way. Worth setting once to match your amplifier.
-  - platform: dspi
-    dspi_id: dspi_hub
-    type: master_volume
-    name: Master Volume
-    id: dspi_master_volume
+  # Keep the on-screen slider in step with changes made anywhere else (Home
+  # Assistant, the DSPi's own front panel). slider.update deliberately does
+  # not emit VALUE_CHANGED, so this cannot loop back into the slider's own
+  # automation.
+  - id: !extend dspi_volume
+    on_value:
+      - lvgl.slider.update:
+          id: volume_slider
+          value: !lambda "return (int) x;"
+      - lvgl.label.update:
+          id: volume_label
+          text: !lambda |-
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%.1f dB", x);
+            return std::string(buf);
 
 switch:
-  - platform: dspi
-    dspi_id: dspi_hub
-    name: Mute
-    id: dspi_mute
-
-select:
-  - platform: dspi
-    dspi_id: dspi_hub
-    name: Input Source
-    id: dspi_input_source
-    entity_category: config
-
-# --- Audio path to the DSPi ------------------------------------------------
-#
-# The ESP32 is the I2S clock master and the DSPi is the clock slave, which is
-# what lets the DSPi auto-detect the rate and servo its own outputs to our
-# clock. 32-bit slots are required: the DSPi's slave mode expects
-# BCK = 64 x Fs and does not detect the frame format at runtime.
-#
-# No MCLK pin is wired. The DSPi forces its own MCK output off while clock-
-# slaved and does not want one from us, so that is a pin saved rather than a
-# feature missing.
-
-i2s_audio:
-  - id: i2s_bus
-    i2s_lrclk_pin: ${i2s_lrclk}
-    i2s_bclk_pin: ${i2s_bclk}
-
-speaker:
-  - platform: i2s_audio
-    id: dspi_speaker
-    i2s_audio_id: i2s_bus
-    i2s_dout_pin: ${i2s_dout}
-    dac_type: external
-    i2s_mode: primary
-    bits_per_sample: 32bit
-    channel: stereo
-    sample_rate: 48000
-    # Accurate clock generation matters here: the DSPi locks to this clock and
-    # rate-matches its own outputs to it.
-    use_apll: true
-    # Measured behaviour, so you know what to expect rather than guessing:
-    # track changes cost nothing (Sendspin keeps the stream running across
-    # them, and the DSPi holds lock with no losses and no slips), but an
-    # explicit pause does stop BCLK/LRCLK within about 2 s. The DSPi then
-    # drops to ACQUIRING and mutes its outputs until the clock returns,
-    # re-locking cleanly in under 2 s on resume. So expect a beat of silence
-    # after unpausing, and nothing at all between tracks.
-    #
-    # `timeout: never` does NOT prevent that: it governs bus teardown, not
-    # clock output, and the clock stops regardless. It is kept because
-    # avoiding the teardown churn is still worth having, not because it keeps
-    # the DSPi locked.
-    timeout: never
+  # The mute button is a checkable LVGL button, so its checked state has to
+  # follow the switch rather than only being set by tapping it.
+  - id: !extend dspi_mute
+    on_turn_on:
+      - lvgl.widget.update:
+          id: mute_btn
+          state:
+            checked: true
+    on_turn_off:
+      - lvgl.widget.update:
+          id: mute_btn
+          state:
+            checked: false
 
 media_player:
-  # speaker_source, not speaker: this is the platform that can be handed a
-  # media_source to play from. A plain `speaker` media_player has no way to
-  # reference the Sendspin source, so the device would receive the stream and
-  # then have nowhere to put it.
-  - platform: speaker_source
-    id: dspi_media
-    name: Player
-    media_pipeline:
-      speaker: dspi_speaker
-      sources:
-        - sendspin_source
+  # The play/pause glyph is driven from on_play/on_idle, NOT on_pause:
+  # SendspinMediaSource never reports PAUSED. Pausing stops the stream and the
+  # player goes IDLE, so on_pause would never fire and is_paused is always
+  # false. media_player.toggle still does the right thing, mapping to PLAY
+  # from IDLE.
+  - id: !extend dspi_media
+    on_play:
+      - lvgl.button.update:
+          id: play_btn
+          text: "\U0000F04C"
+    on_idle:
+      - lvgl.button.update:
+          id: play_btn
+          text: "\U0000F04B"
 
-sendspin:
-  id: sendspin_hub
-
-media_source:
-  - platform: sendspin
-    id: sendspin_source
-    sendspin_id: sendspin_hub
-    # Sendspin resamples to this rate rather than following the source, so the
-    # DSPi sees a constant 48 kHz. Its clock-slave input locks to 44.1, 48 or
-    # 96 kHz only, so do not set anything else here.
-    sample_rate: 48000
-
-# Track metadata, which is also the quickest confirmation that audio is really
-# flowing rather than merely that the device booted.
-text_sensor:
+# Track position, for the progress bar on the details page. Internal: this
+# polls once a second and is only of interest on the panel itself -- there is
+# no reason to push a 1 Hz stream of it into Home Assistant.
+sensor:
   - platform: sendspin
     sendspin_id: sendspin_hub
-    type: title
-    name: Track Title
+    type: track_progress
+    id: track_progress_ms
+    internal: true
+    on_value:
+      - script.execute: refresh_progress
   - platform: sendspin
     sendspin_id: sendspin_hub
-    type: artist
-    name: Track Artist
+    type: track_duration
+    id: track_duration_ms
+    internal: true
+    on_value:
+      - script.execute: refresh_progress
+
+# Both the bar and the elapsed/total labels depend on the same two sensors, so
+# they are refreshed together rather than each sensor updating half of it.
+script:
+  - id: refresh_progress
+    then:
+      - lvgl.bar.update:
+          id: progress_bar
+          value: !lambda |-
+            float pos = id(track_progress_ms).state;
+            float len = id(track_duration_ms).state;
+            if (std::isnan(pos) || std::isnan(len) || len <= 0) return 0;
+            return (int) (100.0f * pos / len);
+      - lvgl.label.update:
+          id: progress_label
+          text: !lambda |-
+            auto mmss = [](float ms) -> std::string {
+              if (std::isnan(ms) || ms < 0) return std::string("--:--");
+              int total = (int) (ms / 1000.0f);
+              char buf[16];
+              snprintf(buf, sizeof(buf), "%d:%02d", total / 60, total % 60);
+              return std::string(buf);
+            };
+            return mmss(id(track_progress_ms).state) + " / " +
+                   mmss(id(track_duration_ms).state);
+
+# --- Display -----------------------------------------------------------------
+#
+# The ESP32-S3-BOX-3's 320x240 panel, showing album art plus artist and title
+# while something is playing. Pin assignments are from Espressif's own BSP
+# (bsp/esp-box-3/include/bsp/esp-box-3.h) and none of them collide with the
+# five GPIOs the DSPi link uses.
+#
+# Display settings follow Espressif's own ESPHome config for this board: the
+# mipi_spi S3BOX model, colours not inverted, and a reset line that is active
+# low. That last one is easy to get wrong and leaves the panel dark.
+
+spi:
+  - id: lcd_spi
+    clk_pin: GPIO7
+    mosi_pin: GPIO6
+
+# The Box-3's I2C bus, shared by the touch controller and the board's audio
+# codecs (we use none of the latter -- audio goes out over I2S to the DSPi).
+i2c:
+  - id: bus_i2c
+    sda: GPIO8
+    scl: GPIO18
+
+output:
+  - platform: ledc
+    id: backlight_output
+    pin: GPIO47
+
+light:
+  - platform: monochromatic
+    id: backlight
+    name: Backlight
+    output: backlight_output
+    restore_mode: ALWAYS_ON
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_title
+    size: 20
+  - file: "gfonts://Roboto"
+    id: font_artist
+    size: 16
+
+# Album artwork, decoded straight into a drawable image. `resize` is what the
+# server is asked to send, so it is sized for the panel rather than scaled
+# here. 240x240 matches the panel height, so the foreground layer below needs
+# no LVGL-side scaling; the background layer reuses the same decode, just
+# zoomed up, rather than requesting and decoding a second copy.
+image:
+  - platform: sendspin
+    sendspin_id: sendspin_hub
+    id: artwork_slot
+    source: ALBUM
+    format: JPEG
+    type: RGB565
+    resize: 240x240
+    current_image:
+      id: album_art
+    # Fires when the artwork for the now-playing track is ready to show.
+    on_image_display:
+      - lvgl.widget.show: [bg_image, fg_image]
+      # widget.redraw only invalidates for repaint; it won't pick up a changed
+      # image src/dimensions. image.update re-applies src, forcing LVGL to
+      # re-read the now-decoded buffer.
+      - lvgl.image.update:
+          id: bg_image
+          src: album_art
+      - lvgl.image.update:
+          id: fg_image
+          src: album_art
+    on_image_clear:
+      - lvgl.widget.hide: [bg_image, fg_image]
+
+display:
+  - platform: mipi_spi
+    id: lcd
+    model: S3BOX
+    spi_id: lcd_spi
+    invert_colors: false
+    data_rate: 40MHz
+    cs_pin: GPIO5
+    dc_pin: GPIO4
+    reset_pin:
+      number: GPIO48
+      inverted: true
+    # LVGL (below) owns rendering to this display and manages its own dirty
+    # regions, so there is no lambda here and no periodic redraw to configure.
+    update_interval: never
+
+# Capacitive touch, which is what makes the controls and page swiping work.
+#
+# This block must come AFTER display: and not before it. On the Box-3 the touch
+# reset and the LCD reset are the same net (GPIO48), which `display:` owns.
+# Components with equal setup priority are set up in the order they appear
+# here, so configured earlier the GT911 would probe I2C while the panel had yet
+# to release that shared reset -- and the panel's reset pulse would then reset
+# the touch controller straight after, throwing away what the driver had just
+# read from it. Probing after the panel is initialised avoids both.
+#
+# Deliberately no reset_pin here for the same shared-net reason: driving it
+# from this side too would blank the panel. Without a reset pulse of its own
+# the controller keeps whatever address it powered up with, so the driver
+# probes 0x5D and falls back to 0x14.
+touchscreen:
+  - platform: gt911
+    id: touch
+    i2c_id: bus_i2c
+    display: lcd
+
+# Full-screen "now playing" view: the album art doubles as its own backdrop --
+# a zoomed, darkened copy fills the panel edge-to-edge behind the crisp,
+# undistorted artwork, so there is never a hard black margin around non-square
+# art. A bottom gradient scrim keeps title/artist legible over whatever colors
+# the artwork happens to have. True blur isn't practical in real time on this
+# hardware, so the ambient fill is a zoom + darken of the same decode instead
+# of a second, blurred one.
+lvgl:
+  displays:
+    - lcd
+  touchscreens:
+    - touch
+  # Two pages today, so wrapping means either swipe direction gets you to the
+  # other one. A third page (a spectrum analyser) needs no rewiring.
+  page_wrap: true
+  # The controls are an overlay on the artwork, not permanent furniture: they
+  # appear on a tap and retire again once the screen has been left alone. LVGL
+  # drives this from its own input-inactivity timer, so any touch resets it.
+  on_idle:
+    timeout: 8s
+    then:
+      - lvgl.widget.hide: controls_panel
+  gradients:
+    - id: scrim_gradient
+      direction: VER
+      stops:
+        - color: 0x000000
+          opa: 0%
+          position: 0%
+        - color: 0x000000
+          opa: 80%
+          position: 100%
+  pages:
+    - id: now_playing
+      bg_color: 0x000000
+      # A tap anywhere on the artwork brings the controls up; on_idle above
+      # takes them away again.
+      #
+      # A swipe ends in a click too (LVGL only suppresses CLICKED for scrolls,
+      # and this page is not scrollable), which would flash the controls up on
+      # the way to the next page. LVGL clears gesture_dir on the next press
+      # rather than on release, so it still reads as a direction here and
+      # distinguishes the two.
+      on_click:
+        - if:
+            condition:
+              lambda: "return lv_indev_get_gesture_dir(lv_indev_active()) == LV_DIR_NONE;"
+            then:
+              - lvgl.widget.show: controls_panel
+      on_swipe_left:
+        - lvgl.page.next:
+            animation: OVER_LEFT
+            time: 200ms
+      on_swipe_right:
+        - lvgl.page.previous:
+            animation: OVER_RIGHT
+            time: 200ms
+      widgets:
+        - image:
+            id: bg_image
+            src: album_art
+            align: CENTER
+            zoom: 1.34 # 320/240, scales the 240x240 source to cover 320x240
+            image_recolor: 0x000000
+            image_recolor_opa: 51%
+            hidden: true
+        - image:
+            id: fg_image
+            src: album_art
+            align: CENTER
+            hidden: true
+        - obj:
+            id: text_scrim
+            x: 0
+            y: 150
+            width: 320
+            height: 90
+            align: TOP_LEFT
+            radius: 0
+            border_width: 0
+            pad_all: 0
+            bg_grad: scrim_gradient
+            # Purely decorative, and an obj is clickable by default: without
+            # this, taps and swipes over the bottom third would be swallowed
+            # here instead of reaching the page underneath.
+            clickable: false
+        - label:
+            id: artist_label
+            x: 16
+            y: 166
+            width: 288
+            text_font: font_artist
+            text_color: 0xCCCCCC
+            long_mode: SCROLL_CIRCULAR
+            text: ""
+        - label:
+            id: title_label
+            x: 16
+            y: 196
+            width: 288
+            text_font: font_title
+            text_color: 0xFFFFFF
+            long_mode: SCROLL_CIRCULAR
+            text: ""
+
+        # Page indicator. Each page carries its own pair of dots with the
+        # filled one already in the right place, so there is nothing to update
+        # when the page changes. Not clickable, so taps and swipes along the
+        # bottom edge still reach the page.
+        - obj:
+            align: BOTTOM_MID
+            x: -9
+            y: -8
+            width: 8
+            height: 8
+            radius: 4
+            pad_all: 0
+            border_width: 0
+            clickable: false
+            bg_color: 0xFFFFFF
+            bg_opa: 100%
+        - obj:
+            align: BOTTOM_MID
+            x: 9
+            y: -8
+            width: 8
+            height: 8
+            radius: 4
+            pad_all: 0
+            clickable: false
+            bg_opa: 0%
+            border_width: 1
+            border_color: 0xFFFFFF
+            border_opa: 70%
+
+        # Controls, last in the list so they sit on top of everything else.
+        # They live in the band above the scrim so artist and title stay
+        # readable while the controls are up.
+        #
+        # The glyphs are FontAwesome codepoints from LVGL's built-in Montserrat
+        # font (ESPHome has no LV_SYMBOL_* names, and the Roboto fonts above do
+        # not carry these): F048 previous, F04B play, F04C pause, F051 next,
+        # F026 mute.
+        - obj:
+            id: controls_panel
+            hidden: true
+            x: 0
+            y: 84
+            width: 320
+            height: 66
+            align: TOP_LEFT
+            radius: 0
+            border_width: 0
+            pad_all: 0
+            bg_color: 0x000000
+            bg_opa: 55%
+            widgets:
+              - obj:
+                  x: 0
+                  y: 2
+                  width: 320
+                  height: 40
+                  radius: 0
+                  border_width: 0
+                  pad_all: 0
+                  bg_opa: 0%
+                  layout:
+                    type: flex
+                    flex_flow: ROW
+                    flex_align_main: SPACE_EVENLY
+                    flex_align_cross: CENTER
+                  widgets:
+                    - button:
+                        id: prev_btn
+                        width: 56
+                        height: 38
+                        text_font: montserrat_20
+                        text: "\U0000F048"
+                        on_click:
+                          - media_player.previous: dspi_media
+                    - button:
+                        id: play_btn
+                        width: 56
+                        height: 38
+                        text_font: montserrat_20
+                        text: "\U0000F04B"
+                        on_click:
+                          - media_player.toggle: dspi_media
+                    - button:
+                        id: next_btn
+                        width: 56
+                        height: 38
+                        text_font: montserrat_20
+                        text: "\U0000F051"
+                        on_click:
+                          - media_player.next: dspi_media
+                    - button:
+                        id: mute_btn
+                        width: 56
+                        height: 38
+                        checkable: true
+                        text_font: montserrat_20
+                        text: "\U0000F026"
+                        on_click:
+                          - switch.toggle: dspi_mute
+              # The DSPi's own volume, not the media player's: media_player
+              # volume is software gain in the ESP32 speaker ahead of the DSP,
+              # whereas user_volume is the DSPi's listening control and is what
+              # its loudness compensation tracks.
+              - slider:
+                  id: volume_slider
+                  x: 12
+                  y: 48
+                  width: 216
+                  height: 10
+                  min_value: -60
+                  max_value: 0
+                  value: -60
+                  # The write waits for release on purpose: the DSPi UART link
+                  # is single-in-flight with retries, so writing on every drag
+                  # step would flood it. The label below still tracks the
+                  # finger, so it does not feel laggy.
+                  on_release:
+                    - number.set:
+                        id: dspi_volume
+                        value: !lambda "return x;"
+                  on_value:
+                    - lvgl.label.update:
+                        id: volume_label
+                        text: !lambda |-
+                          char buf[16];
+                          snprintf(buf, sizeof(buf), "%.0f dB", (float) x);
+                          return std::string(buf);
+              - label:
+                  id: volume_label
+                  x: 240
+                  y: 44
+                  width: 68
+                  text_font: font_artist
+                  text_color: 0xFFFFFF
+                  text: "-- dB"
+
+    # Track details. Also the page that proves swipe navigation works; a
+    # spectrum analyser page can be added after this one later.
+    - id: track_details
+      bg_color: 0x000000
+      on_swipe_left:
+        - lvgl.page.next:
+            animation: OVER_LEFT
+            time: 200ms
+      on_swipe_right:
+        - lvgl.page.previous:
+            animation: OVER_RIGHT
+            time: 200ms
+      widgets:
+        - label:
+            x: 16
+            y: 16
+            text_font: font_artist
+            text_color: 0x888888
+            text: "ALBUM"
+        - label:
+            id: album_label
+            x: 16
+            y: 38
+            width: 288
+            text_font: font_title
+            text_color: 0xFFFFFF
+            long_mode: SCROLL_CIRCULAR
+            text: ""
+        - label:
+            id: album_artist_label
+            x: 16
+            y: 66
+            width: 288
+            text_font: font_artist
+            text_color: 0xCCCCCC
+            long_mode: SCROLL_CIRCULAR
+            text: ""
+        - bar:
+            id: progress_bar
+            x: 16
+            y: 130
+            width: 288
+            height: 8
+            min_value: 0
+            max_value: 100
+            value: 0
+        - label:
+            id: progress_label
+            x: 16
+            y: 148
+            width: 288
+            text_font: font_artist
+            text_color: 0xCCCCCC
+            text: "--:-- / --:--"
+
+        # Same indicator, with the second dot filled instead.
+        - obj:
+            align: BOTTOM_MID
+            x: -9
+            y: -8
+            width: 8
+            height: 8
+            radius: 4
+            pad_all: 0
+            clickable: false
+            bg_opa: 0%
+            border_width: 1
+            border_color: 0xFFFFFF
+            border_opa: 70%
+        - obj:
+            align: BOTTOM_MID
+            x: 9
+            y: -8
+            width: 8
+            height: 8
+            radius: 4
+            pad_all: 0
+            border_width: 0
+            clickable: false
+            bg_color: 0xFFFFFF
+            bg_opa: 100%

@@ -94,6 +94,17 @@ Alternate pinouts may work as well, but need reconfiguration.
 
 ## Building
 
+There are two configs, for the same hardware:
+
+| Config | What you get |
+|---|---|
+| `dspin.yaml` | The full build: album artwork, track metadata, and touch controls for volume, mute and transport on the Box-3's panel. Flash this unless you have a reason not to. |
+| `dspin-basic.yaml` | Streaming and Home Assistant control only, with nothing on the panel. Useful on a board with no display, or if you would rather not spend the flash and RAM on a UI. |
+
+`dspin.yaml` includes `dspin-basic.yaml` as a package and adds the display to
+it, so the audio path and DSPi control exist in one place only. Everything in
+the hardware notes below applies to both.
+
 `esphome-dspi` is pulled in as an external component from `@main`, so the
 normal case needs nothing special:
 
