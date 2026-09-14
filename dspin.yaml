@@ -18,6 +18,114 @@
 packages:
   base: !include dspin-basic.yaml
 
+# The spectrum analyser belongs to the display, not the player: a headless
+# build has nothing to draw it on, so the DSPi should never be asked to spend
+# FFT time producing it. The hub itself lives in the base config; only the
+# analyser settings and the drawing are added here.
+#
+# One channel, not two. The DSPi rotates a single FFT engine over the selected
+# channels, so a stereo pair would halve the frame rate to ~23 fps each, and
+# one bar set gets the full height of a 240-pixel panel.
+#
+# The input tap is chosen deliberately over the output tap: it sits after the
+# per-input PEQ but before the matrix and master volume, so the bars show what
+# is playing rather than shrinking every time the volume is turned down.
+dspi:
+  - id: !extend dspi_hub
+    rta:
+      tap: input
+      channel_mask: 0x01
+      fft_order: 10
+      avg_ms: 250
+      peak_decay_db_s: 20
+      # Slightly ahead of what the panel can repaint (~20-25 fps, limited by
+      # the blocking SPI flush) so a fresh frame is always waiting, but not so
+      # fast that we re-read frames the device has not replaced yet: it
+      # publishes one about every 21 ms for a single channel at 1024 points.
+      interval: 40ms
+    on_rta_band_frame:
+      - lambda: |-
+          lv_obj_t *cv = id(spectrum_canvas);
+          constexpr int W = 272;
+          constexpr int H = 140;
+          constexpr float FLOOR_DB = -60.0f;
+
+          lv_canvas_fill_bg(cv, lv_color_hex(0x000000), LV_OPA_COVER);
+
+          lv_layer_t layer;
+          lv_canvas_init_layer(cv, &layer);
+          lv_draw_rect_dsc_t dsc;
+          lv_draw_rect_dsc_init(&dsc);
+          dsc.bg_opa = LV_OPA_COVER;
+          dsc.border_width = 0;
+          dsc.radius = 0;
+
+          // Gridlines at 0, -20 and -40 dBFS. -60 is the baseline and needs no
+          // line of its own.
+          dsc.bg_color = lv_color_hex(0x1E2A38);
+          for (int db = 0; db >= -40; db -= 20) {
+            const int gy = (int) ((1.0f - (db - FLOOR_DB) / -FLOOR_DB) * (H - 1) + 0.5f);
+            lv_area_t a = {0, gy, W - 1, gy};
+            lv_draw_rect(&layer, &dsc, &a);
+          }
+
+          // Pitch is derived from the band count the device reports rather
+          // than assumed: it is 34 at 44.1/48 kHz but 37 at 96 kHz.
+          const int n = x.frame.n_bands;
+          if (n > 0) {
+            const int pitch = W / n;
+            const int bw = pitch > 2 ? pitch - 2 : 1;
+            const lv_color_t bar_col = x.live ? lv_color_hex(0x00E0A0) : lv_color_hex(0x33514A);
+            const lv_color_t peak_col = x.live ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x5A5A5A);
+            for (int i = 0; i < n; i++) {
+              const int bx = i * pitch;
+              // fraction() pins an empty band to exactly 0, so bands with no
+              // FFT bin inside them read as gaps rather than as full-scale.
+              const int bh = (int) (x.fraction(x.frame.avg[i], FLOOR_DB) * H + 0.5f);
+              if (bh > 0) {
+                dsc.bg_color = bar_col;
+                lv_area_t a = {bx, H - bh, bx + bw - 1, H - 1};
+                lv_draw_rect(&layer, &dsc, &a);
+              }
+              const int ph = (int) (x.fraction(x.frame.peak[i], FLOOR_DB) * H + 0.5f);
+              if (ph > 0) {
+                dsc.bg_color = peak_col;
+                lv_area_t a = {bx, H - ph, bx + bw - 1, H - ph};
+                lv_draw_rect(&layer, &dsc, &a);
+              }
+            }
+          }
+          lv_canvas_finish_layer(cv, &layer);
+          lv_obj_invalidate(cv);
+
+      # The trigger also fires once on the way into "not live", so the status
+      # line settles rather than flickering every frame.
+      - lvgl.label.update:
+          id: spectrum_status
+          text: !lambda |-
+            if (!x.live) return std::string("no signal");
+            char buf[24];
+            const uint32_t hz = id(dspi_hub)->rta_status().sample_rate_hz;
+            if (hz) snprintf(buf, sizeof(buf), "%u.%u kHz", (unsigned) (hz / 1000), (unsigned) ((hz % 1000) / 100));
+            else snprintf(buf, sizeof(buf), "%u bands", (unsigned) x.frame.n_bands);
+            return std::string(buf);
+
+# A firmware without the analyser never sends a frame, so the trigger above
+# never fires and the status line would sit on "starting..." forever. This is
+# the only thing that can report that, and it runs only while the page is up.
+interval:
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            and:
+              - lvgl.page.is_showing: spectrum
+              - lambda: "return !id(dspi_hub)->rta_available();"
+          then:
+            - lvgl.label.update:
+                id: spectrum_status
+                text: "unavailable"
+
 # Entities defined in the base, extended here to drive the display. `!extend`
 # reaches an existing list item by id and merges into it; without it these
 # blocks would be appended as second, conflicting definitions, because package
@@ -375,13 +483,13 @@ lvgl:
             long_mode: SCROLL_CIRCULAR
             text: ""
 
-        # Page indicator. Each page carries its own pair of dots with the
+        # Page indicator. Each page carries its own set of dots with the
         # filled one already in the right place, so there is nothing to update
         # when the page changes. Not clickable, so taps and swipes along the
         # bottom edge still reach the page.
         - obj:
             align: BOTTOM_MID
-            x: -9
+            x: -18
             y: -8
             width: 8
             height: 8
@@ -393,7 +501,20 @@ lvgl:
             bg_opa: 100%
         - obj:
             align: BOTTOM_MID
-            x: 9
+            x: 0
+            y: -8
+            width: 8
+            height: 8
+            radius: 4
+            pad_all: 0
+            clickable: false
+            bg_opa: 0%
+            border_width: 1
+            border_color: 0xFFFFFF
+            border_opa: 70%
+        - obj:
+            align: BOTTOM_MID
+            x: 18
             y: -8
             width: 8
             height: 8
@@ -512,8 +633,7 @@ lvgl:
                   text_color: 0xFFFFFF
                   text: "-- dB"
 
-    # Track details. Also the page that proves swipe navigation works; a
-    # spectrum analyser page can be added after this one later.
+    # Track details. Also the page that proves swipe navigation works.
     - id: track_details
       bg_color: 0x000000
       on_swipe_left:
@@ -570,7 +690,7 @@ lvgl:
         # Same indicator, with the second dot filled instead.
         - obj:
             align: BOTTOM_MID
-            x: -9
+            x: -18
             y: -8
             width: 8
             height: 8
@@ -583,7 +703,170 @@ lvgl:
             border_opa: 70%
         - obj:
             align: BOTTOM_MID
-            x: 9
+            x: 0
+            y: -8
+            width: 8
+            height: 8
+            radius: 4
+            pad_all: 0
+            border_width: 0
+            clickable: false
+            bg_color: 0xFFFFFF
+            bg_opa: 100%
+        - obj:
+            align: BOTTOM_MID
+            x: 18
+            y: -8
+            width: 8
+            height: 8
+            radius: 4
+            pad_all: 0
+            clickable: false
+            bg_opa: 0%
+            border_width: 1
+            border_color: 0xFFFFFF
+            border_opa: 70%
+
+    # Spectrum analyser. The DSPi does the FFT; this page only draws the band
+    # table it publishes.
+    #
+    # Everything is drawn into a single canvas rather than one widget per band.
+    # LVGL tracks at most LV_INV_BUF_SIZE (32) invalid areas and falls back to
+    # redrawing the whole screen once that overflows, so 34 bars would repaint
+    # all 320x240 every frame. The canvas is one invalidation of a region we
+    # choose, and on this panel the SPI flush is the frame-rate limit: it is a
+    # blocking, polled transfer, so 272x140 at 40 MHz costs ~15 ms against
+    # ~31 ms for the full screen.
+    - id: spectrum
+      bg_color: 0x000000
+      # The analyser is transient on the DSPi and stops itself when nobody
+      # reads it, so it runs only while this page is actually on screen. A
+      # spectrum nobody is looking at costs the DSPi real FFT and filter-bank
+      # time on the same cores that run the audio path.
+      on_load:
+        - lambda: id(dspi_hub)->set_rta_enabled(true);
+        - lvgl.label.update:
+            id: spectrum_status
+            text: "starting..."
+      on_unload:
+        - lambda: id(dspi_hub)->set_rta_enabled(false);
+      on_swipe_left:
+        - lvgl.page.next:
+            animation: OVER_LEFT
+            time: 200ms
+      on_swipe_right:
+        - lvgl.page.previous:
+            animation: OVER_RIGHT
+            time: 200ms
+      widgets:
+        - label:
+            x: 16
+            y: 14
+            text_font: font_artist
+            text_color: 0x888888
+            text: "SPECTRUM"
+        - label:
+            id: spectrum_status
+            x: 120
+            y: 14
+            width: 184
+            text_font: font_artist
+            text_color: 0x888888
+            text_align: RIGHT
+            text: ""
+
+        # dB scale. Static labels beside the canvas rather than text drawn into
+        # it: they never change, so they cost nothing per frame.
+        - label:
+            x: 4
+            y: 34
+            text_font: font_artist
+            text_color: 0x555555
+            text: "0"
+        - label:
+            x: 4
+            y: 80
+            text_font: font_artist
+            text_color: 0x555555
+            text: "-20"
+        - label:
+            x: 4
+            y: 126
+            text_font: font_artist
+            text_color: 0x555555
+            text: "-40"
+        - label:
+            x: 4
+            y: 164
+            text_font: font_artist
+            text_color: 0x555555
+            text: "-60"
+
+        - canvas:
+            id: spectrum_canvas
+            x: 40
+            y: 40
+            width: 272
+            height: 140
+
+        # Frequency axis. Positions match the third-octave band layout the
+        # device reports: bands 0, 10, 20 and 30 are the 10 Hz, 100 Hz, 1 kHz
+        # and 10 kHz centres, at a pitch of 272/34 = 8 px.
+        - label:
+            x: 38
+            y: 184
+            text_font: font_artist
+            text_color: 0x555555
+            text: "10"
+        - label:
+            x: 116
+            y: 184
+            text_font: font_artist
+            text_color: 0x555555
+            text: "100"
+        - label:
+            x: 196
+            y: 184
+            text_font: font_artist
+            text_color: 0x555555
+            text: "1k"
+        - label:
+            x: 274
+            y: 184
+            text_font: font_artist
+            text_color: 0x555555
+            text: "10k"
+
+        # Same indicator, with the third dot filled.
+        - obj:
+            align: BOTTOM_MID
+            x: -18
+            y: -8
+            width: 8
+            height: 8
+            radius: 4
+            pad_all: 0
+            clickable: false
+            bg_opa: 0%
+            border_width: 1
+            border_color: 0xFFFFFF
+            border_opa: 70%
+        - obj:
+            align: BOTTOM_MID
+            x: 0
+            y: -8
+            width: 8
+            height: 8
+            radius: 4
+            pad_all: 0
+            clickable: false
+            bg_opa: 0%
+            border_width: 1
+            border_color: 0xFFFFFF
+            border_opa: 70%
+        - obj:
+            align: BOTTOM_MID
+            x: 18
             y: -8
             width: 8
             height: 8
