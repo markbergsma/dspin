@@ -203,6 +203,20 @@ image:
     format: JPEG
     type: RGB565
     resize: 240x240
+    # The artwork is opaque JPEG, so this looks wrong -- it is what makes the
+    # zoomed background below draw at all.
+    #
+    # LVGL's software transform only compiles in its RGB565 case when
+    # LV_DRAW_SW_SUPPORT_RGB565A8 is enabled as well (it reaches the same
+    # routine with has_alpha=false), and ESPHome enables that define only for
+    # images declared transparent. Left opaque, bg_image's `zoom` silently drew
+    # nothing and LVGL logged "Color format 0x12 is not enabled" once per block
+    # -- 270 lines per full-screen repaint, about 700 ms of main loop, enough to
+    # push Sendspin past its buffer and resync. Measured, on hardware.
+    #
+    # The cost is an alpha byte per pixel in the decode buffer, ~57 KB of PSRAM
+    # at 240x240, which this board has to spare.
+    transparency: alpha_channel
     current_image:
       id: album_art
     # Fires when the artwork for the now-playing track is ready to show.
