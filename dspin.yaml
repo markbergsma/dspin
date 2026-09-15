@@ -36,7 +36,18 @@ dspi:
       tap: input
       channel_mask: 0x01
       fft_order: 10
-      avg_ms: 250
+      # Tuned by ear against an RME ADI-2 Pro's analyser. The DSPi's own
+      # default of 250 ms is far too slow for a display: the band EMA moves
+      # only dt/(tau+dt) per frame, so at 250 ms against a ~22 ms frame time
+      # each frame travels 8% of the way to the new value and transients are
+      # averaged away before they reach the bars. 0 is too jittery -- a single
+      # 1024-point frame is only ~21 ms of signal, so per-frame variance shows
+      # as noise. 50 ms averages two or three frames: lively, not twitchy.
+      #
+      # Bands below 250 Hz ignore this: they come from the continuous bass
+      # bank, whose time constant is the longer of avg_ms and one period of
+      # the band centre, so they stay smooth by construction.
+      avg_ms: 50
       peak_decay_db_s: 20
       # Slightly ahead of what the panel can repaint (~20-25 fps, limited by
       # the blocking SPI flush) so a fresh frame is always waiting, but not so
@@ -48,6 +59,15 @@ dspi:
           lv_obj_t *cv = id(spectrum_canvas);
           constexpr int W = 272;
           constexpr int H = 140;
+          // A deliberate trade, not an oversight. Sampling real band levels off
+          // the device showed per-band swings of 20-44 dB, with minima reaching
+          // -73 dB at 10 Hz and -82 dB at 20 kHz, so a -60 dB floor does clip
+          // the extremes: the 20 kHz band shows about 15 dB of its 37 dB swing.
+          // Widening to -80 dB recovers that, but costs resolution everywhere
+          // -- 1.75 px/dB instead of 2.33 over the 140 px canvas -- and the
+          // mid bands, where the music actually lives, visibly lose punch for
+          // it. Tried both on hardware and -60 reads better. Widen this if you
+          // care more about the top and bottom octaves than the middle.
           constexpr float FLOOR_DB = -60.0f;
 
           lv_canvas_fill_bg(cv, lv_color_hex(0x000000), LV_OPA_COVER);
@@ -60,10 +80,10 @@ dspi:
           dsc.border_width = 0;
           dsc.radius = 0;
 
-          // Gridlines at 0, -20 and -40 dBFS. -60 is the baseline and needs no
-          // line of its own.
+          // Gridlines every 20 dB, stopping short of FLOOR_DB itself: that one
+          // is the baseline and needs no line of its own.
           dsc.bg_color = lv_color_hex(0x1E2A38);
-          for (int db = 0; db >= -40; db -= 20) {
+          for (int db = 0; db > (int) FLOOR_DB; db -= 20) {
             const int gy = (int) ((1.0f - (db - FLOOR_DB) / -FLOOR_DB) * (H - 1) + 0.5f);
             lv_area_t a = {0, gy, W - 1, gy};
             lv_draw_rect(&layer, &dsc, &a);
@@ -777,6 +797,12 @@ lvgl:
 
         # dB scale. Static labels beside the canvas rather than text drawn into
         # it: they never change, so they cost nothing per frame.
+        #
+        # y = canvas_y + (1 - (db - FLOOR_DB) / -FLOOR_DB) * (H - 1) - 8, with
+        # canvas_y 40, H 140, FLOOR_DB -60, and the 8 centring the 16 px font
+        # on its gridline. The -60 label is nudged up off the exact baseline so
+        # it clears the frequency axis below. Keep these in step with FLOOR_DB
+        # in the lambda: change one and the scale lies about the bars.
         - label:
             x: 4
             y: 34
