@@ -18,7 +18,7 @@ The name is not quite a coincidence: `sendspin` contains `dspi`
 (`sen·dspin`).
 
 ## Supported functionality
-- Basic control in Home Assistant: user volume & master volume (in dB), mute, source selection, media_player entity, and track meta data.
+- Basic control in Home Assistant: user volume & master volume (in dB), mute, source selection, preset switching, media_player entity, and track meta data.
 - Streaming audio over Sendspin (from e.g. Music Assistant)
 - A multi-page, LVGL based UI with album art, artist/track info and basic playback controls
 - On-screen spectrum analyser, driven by the DSPi's own FFT engine

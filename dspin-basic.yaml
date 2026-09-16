@@ -131,9 +131,44 @@ switch:
 select:
   - platform: dspi
     dspi_id: dspi_hub
+    type: input_source
     name: Input Source
     id: dspi_input_source
     entity_category: config
+
+  # A DSPi preset is the whole DSP state -- EQ, crossovers, delays, the matrix,
+  # the output setup -- so this one entity reconfigures the processor. Not
+  # categorised as config: unlike the input source, which is set once and then
+  # left alone, switching between a late-night and a full-range voicing is
+  # day-to-day listening control.
+  #
+  # EDIT THESE TO MATCH YOUR DSPi. The labels are yours, not the device's:
+  # ESPHome fixes a select's options at startup, so they cannot be read from
+  # the DSPi at runtime. To see what each slot actually holds, run
+  # `python3 tools/dspi_setup.py` from esphome-dspi -- it lists all ten slots,
+  # their names, and which are saved.
+  #
+  # Slot 0 is the only one a factory-fresh DSPi has named, which is why it is
+  # the only one listed here. Add the slots you use:
+  #
+  #     slots:
+  #       0: Default
+  #       1: Movie
+  #       3: Night
+  #
+  # Listing a slot you have never saved is allowed, but selecting it loads
+  # factory defaults rather than stored settings.
+  - platform: dspi
+    dspi_id: dspi_hub
+    type: preset
+    name: Preset
+    id: dspi_preset
+    slots:
+      0: Default
+
+# The DSPi's preset-name sensor lives in the single `text_sensor:` block
+# further down, next to the Sendspin track metadata -- ESPHome allows only one
+# block per platform key.
 
 # --- Audio path to the DSPi ------------------------------------------------
 #
@@ -225,3 +260,17 @@ text_sensor:
     type: artist
     name: Track Artist
     id: track_artist
+
+  # Not track metadata, but ESPHome allows one block per platform key, so the
+  # DSPi's sensor belongs here too. It publishes the device's own name for
+  # whichever preset slot is active: the preset select shows our label for it,
+  # this shows the DSPi's, and it keeps working when the device is on a slot
+  # that select does not list -- which is what happens whenever a preset is
+  # loaded from DSPi Console rather than from here. Diagnostic, because
+  # whenever both agree it merely repeats the select.
+  - platform: dspi
+    dspi_id: dspi_hub
+    type: preset_name
+    name: Preset Name
+    id: dspi_preset_name
+    entity_category: diagnostic
