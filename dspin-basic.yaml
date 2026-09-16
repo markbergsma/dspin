@@ -40,8 +40,8 @@ substitutions:
   # D+/D- lines used for flashing and logging, and GPIO42 is also SD_D2. Take
   # care on the BREAD, which has no functional labels to warn you off them.
   # None of the five below are strapping pins.
-  i2s_bclk: GPIO39 # DOCK PMOD1 IO3 -> DSPi GPIO 2  (slave BCK)
-  i2s_lrclk: GPIO40 # DOCK PMOD1 IO4 -> DSPi GPIO 3  (slave LRCLK)
+  i2s_bclk: GPIO39 # DOCK PMOD1 IO3 -> DSPi GPIO 27 (slave BCK)  + DAC BCK
+  i2s_lrclk: GPIO40 # DOCK PMOD1 IO4 -> DSPi GPIO 28 (slave LRCLK) + DAC LRCK
   i2s_dout: GPIO41 # DOCK PMOD1 IO8 -> DSPi GPIO 1  (I2S RX data)
   dspi_uart_tx: GPIO38 # DOCK PMOD1 IO7 -> DSPi GPIO 17 (its UART RX)
   dspi_uart_rx: GPIO21 # DOCK PMOD1 IO5 <- DSPi GPIO 16 (its UART TX)
@@ -145,6 +145,12 @@ select:
 # No MCLK pin is wired. The DSPi forces its own MCK output off while clock-
 # slaved and does not want one from us, so that is a pin saved rather than a
 # feature missing.
+#
+# Our two clock pads each drive two inputs: the DSPi's slave pair (GPIO 27/28)
+# and the DAC's BCK/LRCK. That is not a convenience -- while clock-slaved the
+# DSPi drives no clock at all, and its I2S output slot shifts data out on the
+# external edges it is listening to, so the DAC can only get its clocks from
+# us. See "The DAC shares our clock" in the README.
 
 i2s_audio:
   - id: i2s_bus

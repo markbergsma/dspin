@@ -80,8 +80,8 @@ python3 dspi_setup.py --apply --audio --persist
 
 | ESP32 | → | DSPi | | DOCK position |
 |---|---|---|---|---|
-| GPIO39 | → | GPIO 2 | I2S BCK (slave pair) | PMOD1 IO3 |
-| GPIO40 | → | GPIO 3 | I2S LRCLK | PMOD1 IO4 |
+| GPIO39 | → | GPIO 27 | I2S BCK (slave pair) | PMOD1 IO3 |
+| GPIO40 | → | GPIO 28 | I2S LRCLK | PMOD1 IO4 |
 | GPIO41 | → | GPIO 1 | I2S data | PMOD1 IO8 |
 | GPIO38 | → | GPIO 17 | UART RX | PMOD1 IO7 |
 | GPIO21 | ← | GPIO 16 | UART TX | PMOD1 IO5 |
@@ -128,6 +128,9 @@ clock. Two consequences:
 - **The DSPi forces its MCK output off** in slave mode, since a locally
   generated master clock would be asynchronous to our BCK/LRCLK. A downstream
   DAC that needs MCLK must generate its own.
+- **The DSPi drives no BCK/LRCLK of its own** either, so a downstream I2S DAC
+  hangs off our clock lines rather than the DSPi's — see
+  [The DAC shares our clock](#the-dac-shares-our-clock).
 
 Sendspin resamples to a fixed rate (`sample_rate`, default 48000) rather than
 following the source, so the DSPi sees a constant 48 kHz.
