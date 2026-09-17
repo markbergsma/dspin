@@ -253,6 +253,8 @@ media_source:
     # 24 fills it. Needs no change to the speaker: ESPHome narrows but never widens, so the
     # stream stays 24-bit inside the existing 32-bit slots and BCK stays at 64 x Fs.
     bits_per_sample: 24
+    # buffer_size counts *encoded* bytes, ~1s @ 24bit 48 kHz FLAC 216 kB/s
+    buffer_size: 1800000
 
 # Track metadata, which is also the quickest confirmation that audio is really
 # flowing rather than merely that the device booted.
