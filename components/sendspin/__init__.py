@@ -5,6 +5,7 @@ import esphome.codegen as cg
 from esphome.components import esp32, network, psram, socket, wifi
 import esphome.config_validation as cv
 from esphome.const import (
+    CONF_BITS_PER_SAMPLE,
     CONF_BUFFER_SIZE,
     CONF_FORMAT,
     CONF_HEIGHT,
@@ -286,28 +287,43 @@ async def to_code(config: ConfigType) -> None:
     if data.player_support:
         cg.add_define("USE_SENDSPIN_PLAYER", True)
 
-        # Configures the player role. We always assume support for 16 bits per sample mono and stereo FLAC, Opus, and PCM at the configured sample rate
+        # Configures the player role. We assume support for mono and stereo FLAC, Opus, and PCM at the configured sample rate
         # (with Opus only supported at 48 kHz since that's the only sample rate it supports). Users can configure the specific formats via the Sendspin server
         player_cfg = data.player_config
         sample_rate = player_cfg[CONF_SAMPLE_RATE]
+        bits_per_sample = player_cfg[CONF_BITS_PER_SAMPLE]
 
+        # Preference order, widest first. Opus is pinned to 16 regardless of the configured
+        # depth: sendspin-cpp decodes it with opus_decode() into an int16_t buffer but sizes the
+        # result from the stream's bit depth, so any other depth mis-sizes every chunk. The
+        # 16-bit lossless entries stay below the wider ones, so a server that declines 24-bit
+        # falls back to 16-bit FLAC rather than to lossy Opus, and genuinely 16-bit material can
+        # be sent as-is. At the default depth the guards collapse this to the original six
+        # entries.
+        formats = []
+        if bits_per_sample != 16:
+            formats.append((CODEC_FORMAT_FLAC, bits_per_sample))
+        formats.append((CODEC_FORMAT_FLAC, 16))
         # OPUS only supports 48 kHz audio
-        codecs = [CODEC_FORMAT_FLAC]
         if sample_rate == 48000:
-            codecs.append(CODEC_FORMAT_OPUS)
-        codecs.append(CODEC_FORMAT_PCM)
+            formats.append((CODEC_FORMAT_OPUS, 16))
+        if bits_per_sample != 16:
+            formats.append((CODEC_FORMAT_PCM, bits_per_sample))
+        formats.append((CODEC_FORMAT_PCM, 16))
 
-        def _audio_format(codec, channels):
+        def _audio_format(codec, channels, bit_depth):
             return cg.StructInitializer(
                 AudioSupportedFormatObject,
                 ("codec", codec),
                 ("channels", channels),
                 ("sample_rate", sample_rate),
-                ("bit_depth", 16),
+                ("bit_depth", bit_depth),
             )
 
         audio_format_structs = [
-            _audio_format(codec, channels) for codec in codecs for channels in (2, 1)
+            _audio_format(codec, channels, bit_depth)
+            for codec, bit_depth in formats
+            for channels in (2, 1)
         ]
 
         psram_stack = player_cfg.get(CONF_TASK_STACK_IN_PSRAM, False)
