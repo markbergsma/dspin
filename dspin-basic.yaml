@@ -104,14 +104,29 @@ dspi:
     poll_interval: 0s
 
 number:
-  # What a listener turns, and what Music Assistant's volume should map onto.
-  # Same field as the USB host's volume slider, and the one that drives the
-  # DSPi's loudness compensation -- so the equal-loudness contour tracks it.
+  # What a listener turns, and what Music Assistant's volume maps onto -- see
+  # the media_player's on_volume below, which routes it here. Same field as the
+  # USB host's volume slider, and the one that drives the DSPi's loudness
+  # compensation, so the equal-loudness contour tracks the real listening level.
   - platform: dspi
     dspi_id: dspi_hub
     type: user_volume
     name: Volume
     id: dspi_volume
+    on_value:
+      # The other half of that link, so the media player's slider follows this
+      # one rather than drifting from it. Needed because the DSPi's volume also
+      # moves on its own: from this entity, from a preset load, or from a knob
+      # on a DSPi control surface.
+      - lambda: |-
+          const float target = 1.0f + x / 60.0f;
+          const float delta = target - id(dspi_media)->volume;
+          // Same idempotence guard as on_volume, in the other direction: that
+          // trigger fires for the call below too, so without this the pair
+          // would trade one redundant write per change.
+          if (delta > 0.004f || delta < -0.004f) {
+            id(dspi_media)->make_call().set_volume(target < 0.0f ? 0.0f : (target > 1.0f ? 1.0f : target)).perform();
+          }
 
   # The output ceiling: how loud this system may ever get. A configuration
   # setting rather than a listening control, so it is categorised as config and
@@ -259,6 +274,44 @@ media_player:
       speaker: dspi_speaker
       sources:
         - sendspin_source
+    # Pin the ESP32's own volume at unity so it never scales the samples.
+    #
+    # Music Assistant sends one full-scale stream to every player in a group and
+    # expects each to attenuate locally, and ESPHome's i2s_audio speaker obliges
+    # by applying software gain in the data path (0..1 mapped to -49..0 dB). On
+    # this board that is the wrong place to do it twice over: it throws away bit
+    # depth ahead of a 24-bit link into a DSP that has a 60 dB gain stage of its
+    # own, and it leaves the DSPi's loudness compensation keyed to a number that
+    # no longer reflects the actual listening level.
+    #
+    # With min == max the remap always yields 1.0, except that a slider at zero
+    # still passes through as silence.
+    volume_min: 100%
+    volume_max: 100%
+    on_volume:
+      # So the volume command becomes the DSPi's user_volume, and the DSP is the
+      # only thing attenuating. Linear in dB across its -60..0 range, which is
+      # the same taper the i2s_audio speaker used before, just wider and applied
+      # downstream.
+      - lambda: |-
+          // Nothing until the DSPi has told us where it actually is.
+          // speaker_source restores its saved volume in setup() and pushes it
+          // through this very trigger, so without this gate an ESP32 reboot
+          // would slam the DSP to whatever this board last had cached -- an
+          // 18 dB jump if the two had drifted apart. The DSPi is the source of
+          // truth, exactly as it is for every entity this component publishes;
+          // dspi_volume's on_value pulls the slider to the device on the first
+          // readback rather than the other way round.
+          if (!id(dspi_hub)->state().user_volume_valid) return;
+
+          const float target_db = -60.0f * (1.0f - x);
+          // Idempotent: this also fires for a volume_set issued by dspi_volume's
+          // own on_value below, and acting on that would send a redundant write
+          // on every change. 0.25 dB is well under one step of either control.
+          const float delta = target_db - id(dspi_hub)->state().user_volume_db;
+          if (delta > 0.25f || delta < -0.25f) {
+            id(dspi_hub)->set_user_volume_db(target_db);
+          }
 
 sendspin:
   id: sendspin_hub
