@@ -50,8 +50,12 @@ fi
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 
+# The second rewrite covers any local component path: relative to the config file it resolves
+# fine for a plain `esphome run` from the repo root, but the scratch copy moves the config away
+# from it, so it has to become absolute here.
 for f in dspin*.yaml; do
-  sed "s|source: github://markbergsma/esphome-dspi@main|source: {type: local, path: $COMPONENTS}|" \
+  sed -e "s|source: github://markbergsma/esphome-dspi@main|source: {type: local, path: $COMPONENTS}|" \
+      -e "s|source: {type: local, path: components}|source: {type: local, path: $PWD/components}|" \
     "$f" >"$scratch/$f"
 done
 [ -f secrets.yaml ] && cp secrets.yaml "$scratch/secrets.yaml"

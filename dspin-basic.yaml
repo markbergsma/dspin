@@ -63,6 +63,11 @@ psram:
 external_components:
   - source: github://markbergsma/esphome-dspi@main
     components: [dspi]
+  # Local experiment: a copy of ESPHome 2026.8.2's sendspin component, patched to make the
+  # advertised bit depth configurable. An external component shadows the built-in of the same
+  # name. Drop this entry once the option exists upstream.
+  - source: {type: local, path: components}
+    components: [sendspin]
 
 logger:
   level: INFO
@@ -243,6 +248,11 @@ media_source:
     # DSPi sees a constant 48 kHz. Its clock-slave input locks to 44.1, 48 or
     # 96 kHz only, so do not set anything else here.
     sample_rate: 48000
+    # The DSPi's I2S receiver reads 24 bits MSB-aligned out of each 32-bit frame and masks the
+    # low byte, so at the default 16 bits a third of what it consumes is padding. Advertising
+    # 24 fills it. Needs no change to the speaker: ESPHome narrows but never widens, so the
+    # stream stays 24-bit inside the existing 32-bit slots and BCK stays at 64 x Fs.
+    bits_per_sample: 24
 
 # Track metadata, which is also the quickest confirmation that audio is really
 # flowing rather than merely that the device booted.
