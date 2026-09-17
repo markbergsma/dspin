@@ -125,8 +125,36 @@ number:
 switch:
   - platform: dspi
     dspi_id: dspi_hub
+    type: user_mute
     name: Mute
     id: dspi_mute
+
+  # The DSP feature toggles. These do not persist: the DSPi holds them in RAM
+  # and inside each preset, so loading a preset resets all four to whatever it
+  # stored. Drop any you do not want -- an omitted toggle is not even polled.
+  #
+  # The ids are carried so dspin.yaml can reach them with `id: !extend` when
+  # these get on-screen controls.
+  - platform: dspi
+    dspi_id: dspi_hub
+    type: loudness
+    name: Loudness
+    id: dspi_loudness
+  - platform: dspi
+    dspi_id: dspi_hub
+    type: eq_bypass
+    name: EQ Bypass
+    id: dspi_eq_bypass
+  - platform: dspi
+    dspi_id: dspi_hub
+    type: crossfeed
+    name: Crossfeed
+    id: dspi_crossfeed
+  - platform: dspi
+    dspi_id: dspi_hub
+    type: leveller
+    name: Leveller
+    id: dspi_leveller
 
 select:
   - platform: dspi
