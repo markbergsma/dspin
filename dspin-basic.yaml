@@ -26,6 +26,16 @@ substitutions:
   name: dspin
   friendly_name: DSPin
 
+  # The rate of the I2S link, and the rate Sendspin asks the server for. 44.1 kHz
+  # because practically all music is, so the common case becomes a pass-through
+  # and only the minority of 48 kHz material gets resampled server-side.
+  #
+  # Only 44100 and 48000 are valid. The DSPi's clock-slave input locks to
+  # 44.1 / 48 / 96 kHz, but ESPHome caps a speaker's sample_rate at 48000
+  # (AUDIO_COMPONENT_SCHEMA, and primary-mode I2S advertises the same maximum),
+  # so 96 kHz cannot be driven from here whatever the DSPi can accept.
+  sample_rate: 44100
+
   # Every board-specific detail lives here. Porting to another ESP32 board
   # should mean editing this block and nothing else.
   #
@@ -244,7 +254,7 @@ speaker:
     i2s_mode: primary
     bits_per_sample: 32bit
     channel: stereo
-    sample_rate: 48000
+    sample_rate: ${sample_rate}
     # Accurate clock generation matters here: the DSPi locks to this clock and
     # rate-matches its own outputs to it.
     use_apll: true
@@ -320,10 +330,15 @@ media_source:
   - platform: sendspin
     id: sendspin_source
     sendspin_id: sendspin_hub
-    # Sendspin resamples to this rate rather than following the source, so the
-    # DSPi sees a constant 48 kHz. Its clock-slave input locks to 44.1, 48 or
-    # 96 kHz only, so do not set anything else here.
-    sample_rate: 48000
+    # Must match the speaker above, hence the shared substitution: this is the
+    # one rate we advertise, and the server converts to it. Nothing resamples on
+    # the ESP32 -- the conversion happens server-side, which is why picking the
+    # rate the music is already in avoids the work entirely.
+    #
+    # At any rate other than 48 kHz the component drops Opus from the advertised
+    # codecs on its own, Opus being 48 kHz-only. That leaves FLAC and PCM, both
+    # lossless, so it costs nothing here.
+    sample_rate: ${sample_rate}
 
 # Track metadata, which is also the quickest confirmation that audio is really
 # flowing rather than merely that the device booted.
