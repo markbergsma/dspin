@@ -370,3 +370,16 @@ text_sensor:
     name: Preset Name
     id: dspi_preset_name
     entity_category: diagnostic
+
+sensor:
+  # The rate the DSPi is actually running at, which nothing in this config
+  # determines. The DSPi does no sample rate conversion, so one rate drives the
+  # active input, the DSP and every output at once, and it follows whichever
+  # source is selected: the substitution above only sets what we clock our own
+  # I2S at, and the moment the DSPi is switched to USB the rate becomes
+  # whatever the host asked for. Diagnostic by default, from the platform.
+  - platform: dspi
+    dspi_id: dspi_hub
+    type: pipeline_rate
+    name: Sample Rate
+    id: dspi_pipeline_rate
